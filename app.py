@@ -284,9 +284,24 @@ class DashboardPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background: transparent;")
-        self.layout = QVBoxLayout(self)
+
+        # 外层只放滚动区域
+        page_lo = QVBoxLayout(self)
+        page_lo.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        self.layout = QVBoxLayout(content)
         self.layout.setContentsMargins(T.PAGE_MARGIN, 24, T.PAGE_MARGIN, 24)
         self.layout.setSpacing(T.PAGE_SPACING)
+
+        scroll.setWidget(content)
+        page_lo.addWidget(scroll)
 
         # 词芽词汇自动刷新定时器
         self._vocab_card = None
@@ -384,8 +399,9 @@ class DashboardPage(QWidget):
 
         main_card = QFrame()
         border_color = "rgba(123,155,106,0.3)" if is_done else "rgba(212,168,83,0.25)"
+        main_card.setObjectName("mainTaskCard")
         main_card.setStyleSheet(f"""
-            QFrame {{ background:{T.CARD}; border:1px solid {border_color}; border-radius:{T.RADIUS_LG}px; }}
+            QFrame#mainTaskCard {{ background:{T.CARD}; border:1px solid {border_color}; border-radius:{T.RADIUS_LG}px; }}
         """)
         ml = QVBoxLayout(main_card); ml.setContentsMargins(T.CARD_PAD, T.CARD_PAD, T.CARD_PAD, T.CARD_PAD); ml.setSpacing(10)
 
@@ -554,8 +570,9 @@ class DashboardPage(QWidget):
     def _build_vocab_section(self):
         """在仪表盘上创建词芽词汇统计卡片"""
         self._vocab_card = QFrame()
+        self._vocab_card.setObjectName("vocabCard")
         self._vocab_card.setStyleSheet(f"""
-            QFrame {{
+            QFrame#vocabCard {{
                 background: {T.CARD};
                 border: 1px solid {T.DIVIDER};
                 border-radius: {T.RADIUS_LG}px;
@@ -640,8 +657,11 @@ def _clear_layout(lo):
     while lo.count():
         item = lo.takeAt(0)
         w = item.widget()
-        if w: w.deleteLater()
-        elif item.layout(): _clear_layout(item.layout())
+        if w is not None:
+            w.hide()
+            w.deleteLater()
+        elif item.layout() is not None:
+            _clear_layout(item.layout())
 
 
 class TimerPage(QWidget):
@@ -1004,10 +1024,10 @@ class FirstStepApp(QMainWindow):
             btn.clicked.connect(lambda checked, pi=page_idx: self.show_page(pi))
             nav_layout.addWidget(btn); self.nav_btns.append(btn)
         # Theme toggle button
-        theme_btn = QPushButton("配色"); theme_btn.setFixedSize(70,70); theme_btn.setCursor(Qt.PointingHandCursor)
-        theme_btn.setStyleSheet(f"background:transparent; color:{T.TEXT_MUTED}; border:1px solid {T.DIVIDER}; border-radius:35px; font-size:11px;")
-        theme_btn.clicked.connect(self.cycle_theme)
-        nav_layout.addWidget(theme_btn)
+        self._theme_btn = QPushButton("配色"); self._theme_btn.setFixedSize(70,70); self._theme_btn.setCursor(Qt.PointingHandCursor)
+        self._theme_btn.setStyleSheet(f"background:transparent; color:{T.TEXT_MUTED}; border:1px solid {T.DIVIDER}; border-radius:35px; font-size:11px;")
+        self._theme_btn.clicked.connect(self.cycle_theme)
+        nav_layout.addWidget(self._theme_btn)
         nav_layout.addStretch(); main_layout.addWidget(nav)
         self._theme_dirty = set()
         self._nav = nav; self.nav_btns[0].setChecked(True)
@@ -1100,6 +1120,21 @@ class FirstStepApp(QMainWindow):
         next_name = names[(idx + 1) % len(names)]
         apply_theme(next_name)
         self.setStyleSheet(qss())
+
+        # 刷新底部导航栏和配色按钮的颜色
+        nbg = QColor(T.BG); nbg.setAlpha(242)
+        self._nav.setStyleSheet(f"background: rgba({nbg.red()},{nbg.green()},{nbg.blue()},0.95); border-top: 1px solid {T.DIVIDER};")
+        self._theme_btn.setStyleSheet(f"background:transparent; color:{T.TEXT_MUTED}; border:1px solid {T.DIVIDER}; border-radius:35px; font-size:11px;")
+        for btn in self.nav_btns:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {T.TEXT_MUTED}; border: none;
+                    border-radius: 16px; font-size: {T.BODY}px; font-weight: 500;
+                }}
+                QPushButton:hover {{ color: {T.TEXT_DIM}; }}
+                QPushButton:checked {{ color: {T.GOLD}; font-weight: 700; font-size: {T.BODY+1}px; }}
+            """)
+
         # Mark all pages as needing rebuild on next visit
         self._theme_dirty = set(range(len(self.pages)))
         # Rebuild current page immediately

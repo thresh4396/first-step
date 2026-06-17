@@ -287,6 +287,14 @@ class DashboardPage(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(T.PAGE_MARGIN, 24, T.PAGE_MARGIN, 24)
         self.layout.setSpacing(T.PAGE_SPACING)
+
+        # 词芽词汇自动刷新定时器
+        self._vocab_card = None
+        self._vocab_data = {}
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._refresh_vocab)
+        self._refresh_timer.start(3000)  # 每 3 秒刷新
+
         self.build()
 
     def build(self):
@@ -408,6 +416,9 @@ class DashboardPage(QWidget):
             btn_row.addWidget(ab); btn_row.addWidget(rb)
         btn_row.addStretch(); ml.addLayout(btn_row)
         self.layout.addWidget(main_card)
+
+        # ── 词芽词汇统计 ──
+        self._build_vocab_section()
 
         # ── Daily Habits ──
         habits = get_daily_habits()
@@ -537,6 +548,91 @@ class DashboardPage(QWidget):
         save_today_task(td); self.rebuild()
 
     def rebuild(self): self.build()
+
+    # ── 词芽词汇同步 ──
+
+    def _build_vocab_section(self):
+        """在仪表盘上创建词芽词汇统计卡片"""
+        self._vocab_card = QFrame()
+        self._vocab_card.setStyleSheet(f"""
+            QFrame {{
+                background: {T.CARD};
+                border: 1px solid {T.DIVIDER};
+                border-radius: {T.RADIUS_LG}px;
+            }}
+        """)
+        card_lo = QVBoxLayout(self._vocab_card)
+        card_lo.setContentsMargins(T.CARD_PAD, 16, T.CARD_PAD, 16)
+        card_lo.setSpacing(8)
+
+        header = QHBoxLayout()
+        title = QLabel("🌱 词芽 · 词汇积累")
+        title.setStyleSheet(f"font-size:{T.BODY}px; font-weight:700; color:{T.GOLD};")
+        header.addWidget(title)
+        header.addStretch()
+        self._vocab_refresh_lbl = QLabel("")
+        self._vocab_refresh_lbl.setStyleSheet(f"font-size:{T.SMALL}px; color:{T.TEXT_MUTED};")
+        header.addWidget(self._vocab_refresh_lbl)
+        card_lo.addLayout(header)
+
+        # 统计数字行
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(24)
+
+        self._vocab_stat_total = self._make_stat_label("📚 累计", "0")
+        self._vocab_stat_today = self._make_stat_label("➕ 今日新增", "0")
+        self._vocab_stat_reviewed = self._make_stat_label("🔄 今日复习", "0")
+        self._vocab_stat_dialogues = self._make_stat_label("💬 生成对话", "0")
+
+        stats_row.addWidget(self._vocab_stat_total)
+        stats_row.addWidget(self._vocab_stat_today)
+        stats_row.addWidget(self._vocab_stat_reviewed)
+        stats_row.addWidget(self._vocab_stat_dialogues)
+        stats_row.addStretch()
+        card_lo.addLayout(stats_row)
+
+        self.layout.addWidget(self._vocab_card)
+        self._refresh_vocab()
+
+    def _make_stat_label(self, label_text, value_text):
+        w = QWidget()
+        lo = QVBoxLayout(w)
+        lo.setContentsMargins(0, 0, 0, 0)
+        lo.setSpacing(2)
+        lbl = QLabel(label_text)
+        lbl.setStyleSheet(f"font-size:{T.SMALL}px; color:{T.TEXT_MUTED};")
+        lo.addWidget(lbl)
+        val = QLabel(value_text)
+        val.setStyleSheet(f"font-size:{T.H2}px; font-weight:700; color:{T.TEXT};")
+        lo.addWidget(val)
+        return w
+
+    def _refresh_vocab(self):
+        """从 daily_log 读取词芽数据并更新卡片"""
+        if not self._vocab_card:
+            return
+        try:
+            log = get_daily_log()
+            td = log.get(today_key(), {})
+            new_data = {
+                "total": td.get("vocab_total", 0),
+                "added": td.get("vocab_added", 0),
+                "reviewed": td.get("vocab_reviewed", 0),
+                "dialogues": td.get("vocab_dialogues", 0),
+            }
+            # 只在数据变化时更新 UI
+            if new_data != self._vocab_data:
+                self._vocab_data = new_data
+                self._vocab_stat_total.findChildren(QLabel)[1].setText(str(new_data["total"]))
+                self._vocab_stat_today.findChildren(QLabel)[1].setText(str(new_data["added"]))
+                self._vocab_stat_reviewed.findChildren(QLabel)[1].setText(str(new_data["reviewed"]))
+                self._vocab_stat_dialogues.findChildren(QLabel)[1].setText(str(new_data["dialogues"]))
+                # 刷新时间戳
+                from datetime import datetime
+                ts = datetime.now().strftime("%H:%M:%S")
+                self._vocab_refresh_lbl.setText(f"已同步 {ts}")
+        except Exception:
+            pass  # 静默失败，不影响主流程
 
 
 def _clear_layout(lo):

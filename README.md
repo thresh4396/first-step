@@ -22,16 +22,20 @@
 - **每日回顾** — 一句话记录，连续天数追踪
 - **双主题** — 暖金（暗色）/ 日初（浅色）
 
-## 安装运行
+## 下载使用
+
+### 普通用户（无需装任何东西）
+
+去 [Releases 页面](https://github.com/thresh4396/first-step/releases) 下载 `第一步-v1.0.zip`，解压后双击「第一步.exe」即可运行。
+
+### 开发者
 
 ```bash
+git clone https://github.com/thresh4396/first-step.git
+cd first-step
 pip install PySide6
 python app.py
 ```
-
-或双击 `start.vbs` 无窗口启动。
-
-桌面快捷方式已自动创建。
 
 ## 项目结构
 

@@ -7,7 +7,11 @@ import os
 import sys
 
 # ---- 路径 ----
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller onefile 兼容：用 sys.executable 而不是 __file__
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
 # 数据文件

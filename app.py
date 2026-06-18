@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
     QScrollArea, QLineEdit, QTextEdit, QDialog,
 )
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRectF, QPoint, Property, Signal
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRectF, QPoint, QPointF, Property, Signal
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QRadialGradient, QConicalGradient
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,6 +27,7 @@ from data_manager import (
     auto_populate_daily_habits,
 )
 from lunar import lunar_date_string, solar_days_in_month
+from holidays import get_holidays
 
 # ======== DESIGN TOKENS (1080p) ========
 class T:
@@ -66,7 +67,7 @@ THEMES = {
     "暖金": {"BG":"#1a1a1a","CARD":"#252525","ELEVATED":"#2e2e2e","GOLD":"#d4a853","GOLD_DIM":"#b8923a","CORAL":"#c97d60","TEXT":"#e8e0d5","TEXT_DIM":"#8a8078","TEXT_MUTED":"#5c5650","SAGE":"#7b9b6a","DIVIDER":"#33302b"},
     "日初": {"BG":"#f5f0e8","CARD":"#ffffff","ELEVATED":"#f0ebe0","GOLD":"#b8860b","GOLD_DIM":"#8b6508","CORAL":"#c06040","TEXT":"#2a2218","TEXT_DIM":"#6b5c48","TEXT_MUTED":"#9b8c78","SAGE":"#5b8040","DIVIDER":"#e0d8c8"},
 }
-_current_theme = "暖金"
+_current_theme = "日初"
 
 def apply_theme(name):
     global _current_theme
@@ -182,6 +183,8 @@ class NavBtn(QPushButton):
 
 class TodoWidget(QFrame):
     toggled = Signal(int)
+    remove_requested = Signal(int)
+    timer_requested = Signal(int)
 
     def __init__(self, index, text, done=False, minutes=15, parent=None):
         super().__init__(parent)
@@ -191,11 +194,37 @@ class TodoWidget(QFrame):
         self.setFixedHeight(64)
         self.update_style()
 
+        # 计时按钮
+        self.timer_btn = QPushButton("⏱", self)
+        self.timer_btn.setFixedSize(28, 28)
+        self.timer_btn.setCursor(Qt.PointingHandCursor)
+        self.timer_btn.setToolTip("开始计时")
+        self.timer_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {T.TEXT_MUTED}; border: none; font-size: 16px; border-radius: 14px; }}
+            QPushButton:hover {{ color: {T.GOLD}; background: rgba(212,168,83,0.12); }}
+        """)
+        self.timer_btn.clicked.connect(lambda: self.timer_requested.emit(self.idx))
+
+        # 删除按钮
+        self.del_btn = QPushButton("×", self)
+        self.del_btn.setFixedSize(28, 28)
+        self.del_btn.setCursor(Qt.PointingHandCursor)
+        self.del_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {T.TEXT_MUTED}; border: none; font-size: 18px; border-radius: 14px; }}
+            QPushButton:hover {{ color: {T.CORAL}; background: rgba(201,125,96,0.12); }}
+        """)
+        self.del_btn.clicked.connect(lambda: self.remove_requested.emit(self.idx))
+
     def update_style(self):
         self.setStyleSheet(f"""
             TodoWidget {{ background: {T.CARD}; border: 1px solid {T.DIVIDER}; border-radius: {T.RADIUS}px; }}
             TodoWidget:hover {{ border-color: {T.TEXT_MUTED}; }}
         """)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.timer_btn.move(self.width() - 76, (self.height() - 28) // 2)
+        self.del_btn.move(self.width() - 38, (self.height() - 28) // 2)
 
     def mousePressEvent(self, e):
         self._done = not self._done
@@ -224,7 +253,7 @@ class TodoWidget(QFrame):
         p.setPen(QColor(T.TEXT if not self._done else T.TEXT_MUTED))
         font = QFont(T.FONT_BODY, T.BODY)
         p.setFont(font)
-        text_rect = QRectF(62, 0, self.width()-140, self.height())
+        text_rect = QRectF(62, 0, self.width()-215, self.height())
         if self._done:
             f = p.font(); f.setStrikeOut(True); p.setFont(f)
         p.drawText(text_rect, Qt.AlignVCenter, self.property("todo_text") or "")
@@ -233,7 +262,7 @@ class TodoWidget(QFrame):
         p.setPen(QColor(T.TEXT_MUTED))
         font2 = QFont(T.FONT_BODY, T.SMALL)
         p.setFont(font2)
-        p.drawText(QRectF(self.width()-80, 0, 70, self.height()), Qt.AlignVCenter, f"{mins}min")
+        p.drawText(QRectF(self.width()-152, 0, 55, self.height()), Qt.AlignVCenter, f"{mins}min")
 
 
 class TimerRing(QWidget):
@@ -241,9 +270,14 @@ class TimerRing(QWidget):
         super().__init__(parent)
         self.setFixedSize(440, 440)
         self._progress = 0.0
+        self._time_text = "15:00"
 
     def setProgress(self, pct):
         self._progress = max(0.0, min(1.0, pct))
+        self.update()
+
+    def setTimeText(self, text):
+        self._time_text = text
         self.update()
 
     progress = Property(float, lambda self: self._progress, setProgress)
@@ -276,6 +310,13 @@ class TimerRing(QWidget):
             p.setPen(QPen(QBrush(grad), 6, Qt.SolidLine, Qt.RoundCap))
             span = int(self._progress * 360 * 16)
             p.drawArc(QRectF(cx-r, cy-r, r*2, r*2), 90*16, -span)
+
+        # 居中绘制时间数字
+        p.setPen(QColor(T.TEXT))
+        time_font = QFont(T.FONT_DISPLAY, 64)
+        time_font.setWeight(QFont.Light)
+        p.setFont(time_font)
+        p.drawText(QRectF(0, 0, self.width(), self.height()), Qt.AlignCenter, self._time_text)
 
 
 # ======== PAGES ========
@@ -310,6 +351,15 @@ class DashboardPage(QWidget):
         self._refresh_timer.timeout.connect(self._refresh_vocab)
         self._refresh_timer.start(3000)  # 每 3 秒刷新
 
+        self._first_show = True
+        self.build()
+
+    def showEvent(self, event):
+        """每次切换到仪表盘时自动刷新"""
+        super().showEvent(event)
+        if self._first_show:
+            self._first_show = False
+            return
         self.build()
 
     def build(self):
@@ -377,6 +427,22 @@ class DashboardPage(QWidget):
         week_block.addLayout(dots_layout)
         hl.addLayout(week_block)
         self.layout.addWidget(header_card)
+
+        # ── 计时器后台运行提示 ──
+        mw = self.window()
+        if hasattr(mw, 'pages') and mw.pages[1] is not None:
+            tp = mw.pages[1]
+            if tp.running:
+                timer_banner = QFrame()
+                timer_banner.setStyleSheet(f"background:{T.ELEVATED}; border:1px solid {T.GOLD}; border-radius:{T.RADIUS}px;")
+                tb_lo = QHBoxLayout(timer_banner); tb_lo.setContentsMargins(20, 14, 20, 14); tb_lo.setSpacing(16)
+                timer_status = QLabel("⏳ 正在专注中…")
+                timer_status.setStyleSheet(f"font-size:{T.BODY}px; color:{T.GOLD}; font-weight:600; background:transparent;")
+                tb_lo.addWidget(timer_status)
+                tb_lo.addStretch()
+                back_btn = GoldBtn("返回计时器"); back_btn.clicked.connect(lambda: mw.resume_timer())
+                tb_lo.addWidget(back_btn)
+                self.layout.addWidget(timer_banner)
 
         # ── Reminders ──
         reminders = get_today_reminders()
@@ -474,7 +540,9 @@ class DashboardPage(QWidget):
             for i, t in enumerate(todos):
                 tw = TodoWidget(i, t["text"], t.get("done",False), t.get("minutes",15))
                 tw.setProperty("todo_text", t["text"]); tw.setProperty("todo_minutes", str(t.get("minutes",15)))
-                tw.toggled.connect(self.toggle_todo); self.layout.addWidget(tw)
+                tw.toggled.connect(self.toggle_todo); tw.remove_requested.connect(self.remove_todo)
+                tw.timer_requested.connect(self.start_todo_timer)
+                self.layout.addWidget(tw)
         else:
             empty = QLabel("还没有待办，开始添加吧")
             empty.setStyleSheet(f"font-size:{T.BODY}px; color:{T.TEXT_MUTED}; padding:24px;"); empty.setAlignment(Qt.AlignCenter)
@@ -506,6 +574,21 @@ class DashboardPage(QWidget):
     def toggle_todo(self, idx):
         td = get_today_task(); td["todos"][idx]["done"] = not td["todos"][idx].get("done",False)
         save_today_task(td); self.rebuild()
+
+    def remove_todo(self, idx):
+        td = get_today_task()
+        if 0 <= idx < len(td.get("todos", [])):
+            td["todos"].pop(idx)
+            save_today_task(td)
+            self.rebuild()
+
+    def start_todo_timer(self, idx):
+        """对指定待办项开始计时"""
+        td = get_today_task()
+        todos = td.get("todos", [])
+        if 0 <= idx < len(todos):
+            todo = todos[idx]
+            self.window().show_timer_for_todo(todo["text"], todo.get("minutes", 15), idx)
 
     def add_todo(self):
         dlg = QDialog(self.window()); dlg.setWindowTitle("添加待办"); dlg.setFixedSize(560, 280)
@@ -569,6 +652,7 @@ class DashboardPage(QWidget):
 
     def _build_vocab_section(self):
         """在仪表盘上创建词芽词汇统计卡片"""
+        self._vocab_data = {}  # 重置缓存，确保新建标签后被正确填充
         self._vocab_card = QFrame()
         self._vocab_card.setObjectName("vocabCard")
         self._vocab_card.setStyleSheet(f"""
@@ -668,26 +752,19 @@ class TimerPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.total_seconds = 0; self.remaining = 0; self.running = False; self.paused = False
-        self.task_name = ""
+        self.task_name = ""; self.todo_idx = None
         self.tick_timer = QTimer(self); self.tick_timer.timeout.connect(self.tick)
         self.build()
 
     def build(self):
-        # Clear old layout if exists
-        old = self.layout()
-        if old:
-            while old.count():
-                item = old.takeAt(0)
-                w = item.widget()
-                if w: w.deleteLater()
-                elif item.layout():
-                    while item.layout().count():
-                        si = item.layout().takeAt(0)
-                        sw = si.widget()
-                        if sw: sw.deleteLater()
-            del old
-        lo = QVBoxLayout(self)
-        lo.setContentsMargins(T.PAGE_MARGIN, 60, T.PAGE_MARGIN, 60); lo.setSpacing(0)
+        # 首次调用创建布局，后续调用只清空控件
+        if hasattr(self, '_layout'):
+            _clear_layout(self._layout)
+        else:
+            self._layout = QVBoxLayout(self)
+            self._layout.setContentsMargins(T.PAGE_MARGIN, 60, T.PAGE_MARGIN, 60)
+            self._layout.setSpacing(0)
+        lo = self._layout
 
         self.title_label = QLabel("")
         self.title_label.setAlignment(Qt.AlignCenter)
@@ -697,13 +774,7 @@ class TimerPage(QWidget):
         self.ring = TimerRing()
         rc = QHBoxLayout(); rc.addStretch(); rc.addWidget(self.ring); rc.addStretch()
         lo.addLayout(rc)
-
-        self.time_label = QLabel("15:00")
-        self.time_label.setAlignment(Qt.AlignCenter)
-        self.time_label.setStyleSheet(f"font-family:'{T.FONT_DISPLAY}'; font-size:72px; font-weight:200; color:{T.TEXT}; margin-top:-260px;")
-        self.time_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        lo.addWidget(self.time_label)
-        lo.addSpacing(60)
+        lo.addSpacing(40)
 
         self.btn_layout = QHBoxLayout(); self.btn_layout.setSpacing(16); self.btn_layout.addStretch()
         lo.addLayout(self.btn_layout)
@@ -715,20 +786,36 @@ class TimerPage(QWidget):
         self.btn_layout.addStretch()
         lo.addStretch()
 
-        back_btn = GhostBtn("返回"); back_btn.clicked.connect(lambda: self.window().show_page(0))
+        back_btn = GhostBtn("返回"); back_btn.clicked.connect(self.go_back)
         lo.addWidget(back_btn, alignment=Qt.AlignCenter)
 
-    def setup(self, task_name, minutes=15):
+    def go_back(self):
+        """返回仪表盘，计时器继续后台运行"""
+        mw = self.window()
+        mw._nav.show()
+        mw.show_page(0)
+        # 强制刷新仪表盘以显示"正在专注"状态
+        if hasattr(mw.pages[0], 'rebuild'):
+            mw.pages[0].rebuild()
+
+    def setup(self, task_name, minutes=15, todo_idx=None):
         self.task_name = task_name; self.total_seconds = minutes*60; self.remaining = self.total_seconds
-        self.running = False; self.paused = False
+        self.running = False; self.paused = False; self.todo_idx = todo_idx
         self.title_label.setText(task_name); self.ring.setProgress(0); self.update_display()
         self.start_btn.show(); self.pause_btn.hide(); self.resume_btn.hide(); self.stop_btn.hide()
 
     def update_display(self):
-        m = self.remaining//60; s = self.remaining%60
-        self.time_label.setText(f"{m:02d}:{s:02d}")
-        pct = (self.total_seconds-self.remaining)/self.total_seconds if self.total_seconds>0 else 0
-        self.ring.setProgress(pct)
+        if self.remaining >= 0:
+            m = int(self.remaining // 60); s = int(self.remaining % 60)
+            self.ring.setTimeText(f"{m:02d}:{s:02d}")
+            pct = (self.total_seconds - self.remaining) / self.total_seconds if self.total_seconds > 0 else 0
+            self.ring.setProgress(min(pct, 1.0))
+        else:
+            # 超时，显示正计时
+            overtime = abs(self.remaining)
+            m = int(overtime // 60); s = int(overtime % 60)
+            self.ring.setTimeText(f"+{m:02d}:{s:02d}")
+            self.ring.setProgress(1.0)
 
     def start(self):
         if self.total_seconds<=0: return
@@ -737,8 +824,7 @@ class TimerPage(QWidget):
 
     def tick(self):
         if self.paused: return
-        self.remaining = max(0, self.remaining-0.2); self.update_display()
-        if self.remaining<=0: self.complete()
+        self.remaining -= 0.2; self.update_display()
 
     def pause(self):
         self.paused=True; self.pause_btn.hide(); self.resume_btn.show()
@@ -748,18 +834,24 @@ class TimerPage(QWidget):
 
     def stop(self):
         self.tick_timer.stop()
+        self.running = False
         actual = round((self.total_seconds-self.remaining)/60,1)
-        td=get_today_task(); td["task"]["status"]="done"; td["task"]["actual_minutes"]=actual
-        save_today_task(td); update_streak()
-        self.window().on_nav(0); self.window().toast(f"专注完成！实际用时 {actual} 分钟")
-
-    def complete(self):
-        self.tick_timer.stop(); self.remaining=0; self.update_display()
-        actual = round(self.total_seconds/60,1)
-        td=get_today_task(); td["task"]["status"]="done"; td["task"]["actual_minutes"]=actual
-        save_today_task(td); update_streak()
-        QTimer.singleShot(600, lambda: self.window().on_nav(0))
-        self.window().toast("时间到！任务完成")
+        td=get_today_task()
+        if self.todo_idx is not None:
+            # 待办计时：标记该待办完成
+            todos = td.get("todos", [])
+            if self.todo_idx < len(todos):
+                todos[self.todo_idx]["done"] = True
+                todos[self.todo_idx]["actual_minutes"] = actual
+            save_today_task(td)
+            self.window().toast(f"待办完成！实际用时 {actual} 分钟")
+        else:
+            # 主线计时
+            td["task"]["status"]="done"; td["task"]["actual_minutes"]=actual
+            save_today_task(td); update_streak()
+            self.window().toast(f"专注完成！实际用时 {actual} 分钟")
+        self.window().on_nav(0)
+        self.window().pages[0].rebuild()
 
 
 class CapturePage(QWidget):
@@ -793,8 +885,15 @@ class CapturePage(QWidget):
         self.input_field = QLineEdit(); self.input_field.setPlaceholderText("输入新内容，回车添加...")
         self.input_field.returnPressed.connect(self.add_item); self._layout.addWidget(self.input_field)
 
-        self.items_container = QVBoxLayout(); self.items_container.setSpacing(6)
-        self._layout.addLayout(self.items_container)
+        # 可滚动条目区
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none; background:transparent;")
+        scroll_w = QWidget()
+        scroll_w.setStyleSheet("background:transparent;")
+        self.items_container = QVBoxLayout(scroll_w); self.items_container.setSpacing(6)
+        scroll.setWidget(scroll_w)
+        self._layout.addWidget(scroll, 1)
 
         pool = get_capture_pool(); items = pool.get(self.current_tab,[])
         if items:
@@ -802,7 +901,6 @@ class CapturePage(QWidget):
         else:
             empty = QLabel("空的，添加点什么吧"); empty.setStyleSheet(f"color:{T.TEXT_MUTED}; padding:32px; font-size:{T.BODY}px;"); empty.setAlignment(Qt.AlignCenter)
             self.items_container.addWidget(empty)
-        self._layout.addStretch()
 
     def switch_tab(self, key): self.current_tab=key; self.build()
 
@@ -833,6 +931,75 @@ class CapturePage(QWidget):
         if len(td["todos"])>=3: self.build(); self.window().toast("今日待办最多3个"); return
         td["todos"].append({"text":item["text"],"done":False,"minutes":15}); save_today_task(td); self.build()
         self.window().toast("已拖到今日待办")
+
+
+
+# ═══════════════════════════════════════════
+# 日历格子组件 (日期数字 + 节日标签)
+# ═══════════════════════════════════════════
+
+class _CalendarDayWidget(QWidget):
+    """日历日期格子：上半日期按钮，下半节日标签"""
+    clicked = Signal(str)  # 传出 "YYYY-MM-DD"
+
+    def __init__(self, day_num, date_str, is_today, has_event, holiday_text, parent=None):
+        super().__init__(parent)
+        self._ds = date_str
+        self.setFixedSize(84, 96)
+        self.setCursor(Qt.PointingHandCursor)
+
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(0, 0, 0, 0)
+        lo.setSpacing(2)
+        lo.setAlignment(Qt.AlignCenter)
+
+        # 日期按钮
+        self.day_btn = QPushButton(str(day_num))
+        self.day_btn.setFixedSize(84, 64)
+        self.day_btn.setCursor(Qt.PointingHandCursor)
+
+        day_font = max(24, T.H2)  # 至少 24px
+
+        if is_today:
+            self.day_btn.setStyleSheet(
+                f"background:{T.GOLD}; color:{T.BG}; border:none; "
+                f"border-radius:32px; font-weight:700; font-size:{day_font}px;"
+            )
+        elif has_event:
+            coral_col2 = QColor(T.CORAL)
+            coral_col2.setAlpha(102)
+            self.day_btn.setStyleSheet(
+                f"background:transparent; color:{T.CORAL}; "
+                f"border:2px solid {coral_col2.name(QColor.HexArgb)}; "
+                f"border-radius:32px; font-size:{day_font}px;"
+            )
+        else:
+            self.day_btn.setStyleSheet(
+                f"background:transparent; color:{T.TEXT}; border:none; "
+                f"border-radius:32px; font-size:{day_font}px;"
+            )
+
+        self.day_btn.clicked.connect(lambda: self.clicked.emit(self._ds))
+        lo.addWidget(self.day_btn, alignment=Qt.AlignCenter)
+
+        # 节日标签
+        if holiday_text:
+            hl = QLabel(holiday_text)
+            hl.setFixedSize(84, 20)
+            hl.setAlignment(Qt.AlignCenter)
+            hl.setStyleSheet(
+                f"font-family:'{T.FONT_BODY}'; font-size:{T.SMALL}px; "
+                f"color:{T.GOLD}; background:transparent; padding:0;"
+            )
+            lo.addWidget(hl, alignment=Qt.AlignCenter)
+        else:
+            spacer = QLabel("")
+            spacer.setFixedSize(84, 20)
+            lo.addWidget(spacer, alignment=Qt.AlignCenter)
+
+    def mousePressEvent(self, e):
+        """点击格子任意位置触发日期按钮"""
+        self.day_btn.click()
 
 
 class CalendarPage(QWidget):
@@ -879,23 +1046,21 @@ class CalendarPage(QWidget):
             row = QHBoxLayout(); row.setSpacing(4)
             for wd in range(7):
                 if week==0 and wd<first_weekday:
-                    ph = QLabel(""); ph.setFixedSize(64,64); row.addWidget(ph); continue
+                    ph = QLabel(""); ph.setFixedSize(84,96); row.addWidget(ph); continue
                 if day_num>days_in_month:
-                    ph = QLabel(""); ph.setFixedSize(64,64); row.addWidget(ph); continue
+                    ph = QLabel(""); ph.setFixedSize(84,96); row.addWidget(ph); continue
                 d = day_num
                 ds = f"{self.view_year}-{self.view_month:02d}-{d:02d}"
                 has_event = ds in cal_data and any(not e.get("done",False) for e in cal_data[ds])
                 is_today = (d==today.day and self.view_month==today.month and self.view_year==today.year)
-                day_btn = QPushButton(str(d)); day_btn.setFixedSize(64,64); day_btn.setCursor(Qt.PointingHandCursor)
-                if is_today:
-                    day_btn.setStyleSheet(f"background:{T.GOLD}; color:{T.BG}; border:none; border-radius:32px; font-weight:700; font-size:{T.BODY}px;")
-                elif has_event:
-                    coral_col2 = QColor(T.CORAL); coral_col2.setAlpha(102)
-                    day_btn.setStyleSheet(f"background:transparent; color:{T.CORAL}; border:2px solid {coral_col2.name(QColor.HexArgb)}; border-radius:32px; font-size:{T.BODY}px;")
-                else:
-                    day_btn.setStyleSheet(f"background:transparent; color:{T.TEXT}; border:none; border-radius:32px; font-size:{T.BODY}px;")
-                day_btn.clicked.connect(lambda checked, ds=ds: self.open_date(ds))
-                row.addWidget(day_btn); day_num+=1
+
+                # 查询节日
+                holidays = get_holidays(self.view_year, self.view_month, d)
+                holiday_text = holidays[0] if holidays else ""
+
+                cell = _CalendarDayWidget(d, ds, is_today, has_event, holiday_text)
+                cell.clicked.connect(self.open_date)
+                row.addWidget(cell); day_num+=1
             self._layout.addLayout(row)
         self._layout.addStretch()
 
@@ -990,6 +1155,7 @@ class ReviewPage(QWidget):
 class FirstStepApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        apply_theme(_current_theme)  # 启动时应用默认主题
         self.setWindowTitle("第一步")
         self.resize(1600, 1000)
         self.setMinimumSize(1200, 800)
@@ -1106,8 +1272,23 @@ class FirstStepApp(QMainWindow):
 
     def show_timer(self):
         td = get_today_task(); task = td["task"]
-        tp = self.pages[1]; tp.setup(task["title"], task.get("estimated_minutes",15))
-        self.show_page(1); self._nav.hide()
+        tp = self.pages[1]
+        self.show_page(1)  # 先切换页面（可能触发 build 重建），再设置数据
+        tp.setup(task["title"], task.get("estimated_minutes",15), todo_idx=None)
+        self._nav.hide()
+
+    def show_timer_for_todo(self, text, minutes, todo_idx):
+        """对待办项开始计时"""
+        tp = self.pages[1]
+        self.show_page(1)
+        tp.setup(text, minutes, todo_idx=todo_idx)
+        self._nav.hide()
+
+    def resume_timer(self):
+        """返回正在运行的计时器页面，不重置"""
+        self._theme_dirty.discard(1)  # 跳过主题重建，保留计时器状态
+        self.show_page(1)
+        self._nav.hide()
 
     def on_nav(self, idx):
         self._nav.show()
